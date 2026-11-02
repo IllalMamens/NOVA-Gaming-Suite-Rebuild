@@ -8,6 +8,7 @@ import android.graphics.drawable.Drawable
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
@@ -186,13 +187,23 @@ private fun NovaApp() {
 }
 
 
+
 @Composable
 private fun GameSpace(modifier: Modifier = Modifier) {
     val context = LocalContext.current
+    val prefs = remember {
+        context.getSharedPreferences("nova_game_preferences", Context.MODE_PRIVATE)
+    }
+
     var apps by remember { mutableStateOf(emptyList<InstalledApp>()) }
     var search by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(true) }
     var scanError by remember { mutableStateOf<String?>(null) }
+    var favorites by remember {
+        mutableStateOf(prefs.getStringSet("favorites", emptySet())?.toSet() ?: emptySet())
+    }
+    var favoriteOnly by remember { mutableStateOf(false) }
+    var selectedApp by remember { mutableStateOf<InstalledApp?>(null) }
 
     fun refreshApps() {
         loading = true
@@ -205,13 +216,18 @@ private fun GameSpace(modifier: Modifier = Modifier) {
         loading = false
     }
 
-    LaunchedEffect(Unit) {
-        refreshApps()
+    fun toggleFavorite(packageName: String) {
+        val updated = favorites.toMutableSet()
+        if (!updated.add(packageName)) updated.remove(packageName)
+        favorites = updated
+        prefs.edit().putStringSet("favorites", updated).apply()
     }
 
+    LaunchedEffect(Unit) { refreshApps() }
+
     val filtered = apps.filter {
-        it.name.contains(search, ignoreCase = true) ||
-            it.packageName.contains(search, ignoreCase = true)
+        (!favoriteOnly || it.packageName in favorites) &&
+        (it.name.contains(search, true) || it.packageName.contains(search, true))
     }
 
     LazyColumn(
@@ -220,36 +236,20 @@ private fun GameSpace(modifier: Modifier = Modifier) {
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item {
-            Text(
-                "N O V A",
-                color = Cyan,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 4.sp
-            )
-            Text(
-                "GAME SPACE",
-                color = Color.White,
-                fontSize = 26.sp,
-                fontWeight = FontWeight.ExtraBold
-            )
-            Text(
-                "YOUR INSTALLED APPS & GAMES",
-                color = Muted,
-                fontSize = 10.sp,
-                letterSpacing = 1.5.sp
-            )
+            Text("N O V A", color = Cyan, fontSize = 13.sp,
+                fontWeight = FontWeight.Bold, letterSpacing = 4.sp)
+            Text("GAME MANAGEMENT", color = Color.White,
+                fontSize = 25.sp, fontWeight = FontWeight.ExtraBold)
+            Text("MANAGE YOUR INSTALLED GAMES", color = Muted,
+                fontSize = 10.sp, letterSpacing = 1.3.sp)
         }
 
         item {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth()
-            ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("${apps.size} aplikasi terdeteksi", color = Cyan,
                         fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                    Text("Aplikasi yang memiliki ikon launcher",
+                    Text("${favorites.size} aplikasi favorit",
                         color = Muted, fontSize = 10.sp)
                 }
                 TextButton(onClick = { refreshApps() }) {
@@ -279,22 +279,32 @@ private fun GameSpace(modifier: Modifier = Modifier) {
             )
         }
 
-        if (loading) {
-            item {
-                Text("Memindai aplikasi...", color = Muted)
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = !favoriteOnly,
+                    onClick = { favoriteOnly = false },
+                    label = { Text("Semua") }
+                )
+                FilterChip(
+                    selected = favoriteOnly,
+                    onClick = { favoriteOnly = true },
+                    label = { Text("★ Favorit") }
+                )
             }
         }
 
+        if (loading) item { Text("Memindai aplikasi...", color = Muted) }
+
         if (scanError != null) {
-            item {
-                Text("Scan gagal: $scanError", color = Color(0xFFFF7777))
-            }
+            item { Text("Scan gagal: $scanError", color = Color(0xFFFF7777)) }
         }
 
         if (!loading && filtered.isEmpty()) {
             item {
                 Text(
-                    if (apps.isEmpty()) "Tidak ada aplikasi launcher ditemukan."
+                    if (favoriteOnly) "Belum ada aplikasi favorit."
+                    else if (apps.isEmpty()) "Tidak ada aplikasi launcher ditemukan."
                     else "Aplikasi tidak ditemukan.",
                     color = Muted
                 )
@@ -316,47 +326,80 @@ private fun GameSpace(modifier: Modifier = Modifier) {
                     Image(
                         bitmap = app.icon.asImageBitmap(),
                         contentDescription = app.name,
-                        modifier = Modifier.size(46.dp),
+                        modifier = Modifier.size(44.dp),
                         contentScale = ContentScale.Fit
                     )
-                    Spacer(Modifier.width(12.dp))
+                    Spacer(Modifier.width(10.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(
-                            app.name,
-                            color = Color.White,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            app.packageName,
-                            color = Muted,
-                            fontSize = 9.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                        Text(app.name, color = Color.White,
+                            fontSize = 13.sp, fontWeight = FontWeight.Bold,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(app.packageName, color = Muted,
+                            fontSize = 9.sp, maxLines = 1,
+                            overflow = TextOverflow.Ellipsis)
+                        TextButton(
+                            onClick = { selectedApp = app },
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            Text("DETAILS", color = Cyan, fontSize = 9.sp)
+                        }
+                    }
+                    IconButton(onClick = { toggleFavorite(app.packageName) }) {
+                        Icon(
+                            if (app.packageName in favorites) Icons.Default.Star
+                            else Icons.Default.StarBorder,
+                            contentDescription = "Favorit",
+                            tint = if (app.packageName in favorites) Cyan else Muted
                         )
                     }
-                    Spacer(Modifier.width(8.dp))
                     FilledTonalButton(
                         onClick = {
-                            val launchIntent =
-                                context.packageManager.getLaunchIntentForPackage(app.packageName)
-                            if (launchIntent != null) {
-                                context.startActivity(launchIntent)
-                            }
+                            context.packageManager
+                                .getLaunchIntentForPackage(app.packageName)
+                                ?.let { context.startActivity(it) }
                         },
                         colors = ButtonDefaults.filledTonalButtonColors(
                             containerColor = Color(0xFF19313C),
                             contentColor = Cyan
                         ),
-                        contentPadding = PaddingValues(horizontal = 12.dp)
+                        contentPadding = PaddingValues(horizontal = 10.dp)
                     ) {
-                        Text("OPEN", fontSize = 10.sp)
+                        Text("OPEN", fontSize = 9.sp)
                     }
                 }
             }
         }
+    }
+
+    selectedApp?.let { app ->
+        AlertDialog(
+            onDismissRequest = { selectedApp = null },
+            containerColor = SurfaceDark,
+            title = { Text(app.name, color = Color.White) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("PACKAGE ID", color = Cyan, fontSize = 10.sp)
+                    Text(app.packageName, color = Color.White, fontSize = 12.sp)
+                    Text("Aplikasi terdeteksi dari launcher Android.",
+                        color = Muted, fontSize = 11.sp)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val intent = Intent(
+                        android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.parse("package:${app.packageName}")
+                    )
+                    context.startActivity(intent)
+                    selectedApp = null
+                }) { Text("APP INFO", color = Cyan) }
+            },
+            dismissButton = {
+                TextButton(onClick = { selectedApp = null }) {
+                    Text("TUTUP", color = Muted)
+                }
+            }
+        )
     }
 }
 
