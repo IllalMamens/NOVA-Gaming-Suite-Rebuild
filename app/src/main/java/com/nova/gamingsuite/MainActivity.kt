@@ -13,14 +13,19 @@ import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
 import java.io.File
+import kotlinx.coroutines.delay
 import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -671,16 +676,97 @@ private fun readCpuFrequency(): String {
     }
 }
 
+
+private data class MonitorSample(
+    val time: Long,
+    val ramMb: Int,
+    val batteryTemp: Float
+)
+
+private fun loadMonitorHistory(context: Context): List<MonitorSample> {
+    val prefs = context.getSharedPreferences("nova_monitor_history", Context.MODE_PRIVATE)
+    return prefs.getString("samples", "")!!
+        .lines()
+        .mapNotNull { line ->
+            val parts = line.split(",")
+            if (parts.size != 3) return@mapNotNull null
+            val time = parts[0].toLongOrNull() ?: return@mapNotNull null
+            val ram = parts[1].toIntOrNull() ?: return@mapNotNull null
+            val temp = parts[2].toFloatOrNull() ?: return@mapNotNull null
+            MonitorSample(time, ram, temp)
+        }.takeLast(300)
+}
+
+private fun saveMonitorHistory(context: Context, samples: List<MonitorSample>) {
+    val content = samples.takeLast(300).joinToString("\n") {
+        "${it.time},${it.ramMb},${it.batteryTemp}"
+    }
+    context.getSharedPreferences("nova_monitor_history", Context.MODE_PRIVATE)
+        .edit().putString("samples", content).apply()
+}
+
 @Composable
 private fun GamingMonitor(modifier: Modifier = Modifier) {
     val context = LocalContext.current
     var device by remember { mutableStateOf(readDeviceInfo(context)) }
     var cpuFrequency by remember { mutableStateOf(readCpuFrequency()) }
+    var isMonitoring by remember { mutableStateOf(false) }
+
+    val history = remember {
+        mutableStateListOf<MonitorSample>().apply {
+            addAll(loadMonitorHistory(context))
+        }
+    }
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/csv")
+    ) { uri ->
+        if (uri != null) {
+            try {
+                val csv = buildString {
+                    append("timestamp,available_ram_mb,battery_temperature_celsius\n")
+                    history.forEach {
+                        append("${it.time},${it.ramMb},${it.batteryTemp}\n")
+                    }
+                }
+                context.contentResolver.openOutputStream(uri)?.use {
+                    it.write(csv.toByteArray(Charsets.UTF_8))
+                }
+            } catch (_: Exception) {
+                android.widget.Toast.makeText(
+                    context, "CSV export failed", android.widget.Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+    }
+
+    LaunchedEffect(isMonitoring) {
+        while (isMonitoring) {
+            device = readDeviceInfo(context)
+            cpuFrequency = readCpuFrequency()
+
+            val ram = device.availableRam.substringBefore(" ")
+                .toIntOrNull() ?: -1
+            val temp = device.batteryTemp.substringBefore(" ")
+                .toFloatOrNull() ?: -1f
+
+            if (ram >= 0) {
+                history.add(MonitorSample(System.currentTimeMillis(), ram, temp))
+                while (history.size > 300) history.removeAt(0)
+                saveMonitorHistory(context, history)
+            }
+            delay(5000)
+        }
+    }
+
+    val latestRam = history.lastOrNull()?.ramMb ?: 0
+    val maxRam = (history.maxOfOrNull { it.ramMb } ?: 1).coerceAtLeast(1)
 
     Column(
         modifier = modifier
             .fillMaxSize()
-            .padding(18.dp),
+            .padding(18.dp)
+            .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         Row(
@@ -695,80 +781,144 @@ private fun GamingMonitor(modifier: Modifier = Modifier) {
                     fontSize = 21.sp,
                     fontWeight = FontWeight.Bold
                 )
-                Text(
-                    "Live device information",
-                    color = Muted,
-                    fontSize = 12.sp
-                )
+                Text("Monitoring History • 5-second interval", color = Muted, fontSize = 11.sp)
             }
-
-            Button(onClick = {
+            IconButton(onClick = {
                 device = readDeviceInfo(context)
                 cpuFrequency = readCpuFrequency()
             }) {
-                Icon(Icons.Default.Refresh, contentDescription = "Refresh")
-                Spacer(Modifier.width(5.dp))
-                Text("Refresh")
+                Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = Cyan)
             }
         }
 
         MonitorMetric(
-            "AVAILABLE RAM",
-            device.availableRam,
-            "Total memory: ${device.totalRam}",
-            Icons.Default.Memory
+            "AVAILABLE RAM", device.availableRam,
+            "Total memory: ${device.totalRam}", Icons.Default.Memory
         )
-
         MonitorMetric(
-            "BATTERY",
-            device.battery,
+            "BATTERY", device.battery,
             "Battery temperature: ${device.batteryTemp}",
             Icons.Default.BatteryChargingFull
         )
-
         MonitorMetric(
-            "CPU FREQUENCY",
-            cpuFrequency,
-            "CPU ABI: ${device.cpu}",
-            Icons.Default.Speed
+            "CPU FREQUENCY", cpuFrequency,
+            "CPU ABI: ${device.cpu}", Icons.Default.Speed
         )
-
         MonitorMetric(
-            "DEVICE",
-            "${device.manufacturer} ${device.model}",
+            "DEVICE", "${device.manufacturer} ${device.model}",
             "Android ${device.android} • SDK ${device.sdk}",
             Icons.Default.PhoneAndroid
         )
 
         Card(
-            colors = CardDefaults.cardColors(
-                containerColor = Color(0xFF111827)
-            ),
+            colors = CardDefaults.cardColors(containerColor = SurfaceDark),
             border = BorderStroke(1.dp, Color(0xFF263449))
         ) {
-            Column(Modifier.padding(15.dp)) {
+            Column(
+                Modifier.fillMaxWidth().padding(15.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text("MONITORING SESSION", color = Cyan, fontWeight = FontWeight.Bold)
                 Text(
-                    "SENSOR AVAILABILITY",
-                    color = Cyan,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 12.sp
+                    if (isMonitoring) "● RECORDING" else "○ STOPPED",
+                    color = if (isMonitoring) Color(0xFF65E6A5) else Muted
                 )
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "CPU temperature: Not available yet",
-                    color = Muted,
-                    fontSize = 12.sp
-                )
-                Text(
-                    "GPU temperature: Not available yet",
-                    color = Muted,
-                    fontSize = 12.sp
-                )
+                Button(
+                    onClick = { isMonitoring = !isMonitoring },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        if (isMonitoring) Icons.Default.Stop else Icons.Default.PlayArrow,
+                        contentDescription = null
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (isMonitoring) "STOP MONITORING" else "START MONITORING")
+                }
+                Text("${history.size} samples saved (maximum 300)", color = Muted, fontSize = 11.sp)
             }
         }
 
+        Card(
+            colors = CardDefaults.cardColors(containerColor = SurfaceDark),
+            border = BorderStroke(1.dp, Color(0xFF263449))
+        ) {
+            Column(
+                Modifier.fillMaxWidth().padding(15.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text("RAM HISTORY", color = Cyan, fontWeight = FontWeight.Bold)
+                Text(
+                    if (history.isEmpty()) "Start monitoring to collect data"
+                    else "Latest available RAM: ${latestRam} MB",
+                    color = Color.White,
+                    fontSize = 12.sp
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth().height(100.dp),
+                    horizontalArrangement = Arrangement.spacedBy(3.dp),
+                    verticalAlignment = Alignment.Bottom
+                ) {
+                    history.takeLast(40).forEach { sample ->
+                        val fraction = (sample.ramMb.toFloat() / maxRam).coerceIn(0.05f, 1f)
+                        Box(
+                            Modifier.weight(1f)
+                                .fillMaxHeight(fraction)
+                                .background(Cyan, RoundedCornerShape(topStart = 3.dp, topEnd = 3.dp))
+                        )
+                    }
+                }
+                Text("Each bar represents one sample • up to 40 latest samples", color = Muted, fontSize = 10.sp)
+            }
+        }
+
+        Card(
+            colors = CardDefaults.cardColors(containerColor = SurfaceDark),
+            border = BorderStroke(1.dp, Color(0xFF263449))
+        ) {
+            Column(
+                Modifier.fillMaxWidth().padding(15.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text("BATTERY TEMPERATURE HISTORY", color = Cyan, fontWeight = FontWeight.Bold)
+                history.takeLast(8).reversed().forEach { sample ->
+                    Text(
+                        "${sample.time}  •  ${if (sample.batteryTemp >= 0) "${sample.batteryTemp} °C" else "N/A"}",
+                        color = Muted,
+                        fontSize = 11.sp
+                    )
+                }
+                if (history.isEmpty()) {
+                    Text("No samples yet", color = Muted, fontSize = 12.sp)
+                }
+            }
+        }
+
+        OutlinedButton(
+            onClick = { exportLauncher.launch("NOVA_Monitor_History.csv") },
+            modifier = Modifier.fillMaxWidth(),
+            enabled = history.isNotEmpty()
+        ) {
+            Icon(Icons.Default.FileDownload, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text("EXPORT CSV")
+        }
+
+        OutlinedButton(
+            onClick = {
+                isMonitoring = false
+                history.clear()
+                saveMonitorHistory(context, history)
+            },
+            modifier = Modifier.fillMaxWidth(),
+            enabled = history.isNotEmpty()
+        ) {
+            Icon(Icons.Default.Delete, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text("CLEAR HISTORY")
+        }
+
         Text(
-            "Data diperbarui saat tombol Refresh ditekan. N/A berarti Android tidak memberikan akses ke data tersebut.",
+            "Monitoring hanya berjalan selama sesi aktif di layar ini. Data disimpan lokal. Suhu yang tidak tersedia dicatat sebagai -1.",
             color = Muted,
             fontSize = 11.sp
         )
