@@ -12,6 +12,7 @@ import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
+import java.io.File
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.BorderStroke
@@ -183,6 +184,7 @@ private fun NovaApp() {
             0 -> Dashboard(Modifier.padding(padding))
             1 -> GameSpace(Modifier.padding(padding))
             2 -> GamingProfiles(Modifier.padding(padding))
+            3 -> GamingMonitor(Modifier.padding(padding))
             else -> PlaceholderPage(tabs[selected], Modifier.padding(padding))
         }
     }
@@ -649,6 +651,176 @@ private fun MetricCard(
             Text(value, color = Color.White, fontSize = 22.sp,
                 fontWeight = FontWeight.ExtraBold)
             Text(detail, color = Muted, fontSize = 10.sp)
+        }
+    }
+}
+
+
+private fun readCpuFrequency(): String {
+    return try {
+        val file = File("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq")
+        if (!file.canRead()) return "N/A"
+
+        val khz = file.readText().trim().toLongOrNull()
+            ?: return "N/A"
+
+        if (khz <= 0) "N/A"
+        else String.format("%.2f GHz", khz / 1_000_000.0)
+    } catch (_: Exception) {
+        "N/A"
+    }
+}
+
+@Composable
+private fun GamingMonitor(modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    var device by remember { mutableStateOf(readDeviceInfo(context)) }
+    var cpuFrequency by remember { mutableStateOf(readCpuFrequency()) }
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(18.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
+                Text(
+                    "GAMING MONITOR",
+                    color = Color.White,
+                    fontSize = 21.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    "Live device information",
+                    color = Muted,
+                    fontSize = 12.sp
+                )
+            }
+
+            Button(onClick = {
+                device = readDeviceInfo(context)
+                cpuFrequency = readCpuFrequency()
+            }) {
+                Icon(Icons.Default.Refresh, contentDescription = "Refresh")
+                Spacer(Modifier.width(5.dp))
+                Text("Refresh")
+            }
+        }
+
+        MonitorMetric(
+            "AVAILABLE RAM",
+            device.availableRam,
+            "Total memory: ${device.totalRam}",
+            Icons.Default.Memory
+        )
+
+        MonitorMetric(
+            "BATTERY",
+            device.battery,
+            "Battery temperature: ${device.batteryTemp}",
+            Icons.Default.BatteryChargingFull
+        )
+
+        MonitorMetric(
+            "CPU FREQUENCY",
+            cpuFrequency,
+            "CPU ABI: ${device.cpu}",
+            Icons.Default.Speed
+        )
+
+        MonitorMetric(
+            "DEVICE",
+            "${device.manufacturer} ${device.model}",
+            "Android ${device.android} • SDK ${device.sdk}",
+            Icons.Default.PhoneAndroid
+        )
+
+        Card(
+            colors = CardDefaults.cardColors(
+                containerColor = Color(0xFF111827)
+            ),
+            border = BorderStroke(1.dp, Color(0xFF263449))
+        ) {
+            Column(Modifier.padding(15.dp)) {
+                Text(
+                    "SENSOR AVAILABILITY",
+                    color = Cyan,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "CPU temperature: Not available yet",
+                    color = Muted,
+                    fontSize = 12.sp
+                )
+                Text(
+                    "GPU temperature: Not available yet",
+                    color = Muted,
+                    fontSize = 12.sp
+                )
+            }
+        }
+
+        Text(
+            "Data diperbarui saat tombol Refresh ditekan. N/A berarti Android tidak memberikan akses ke data tersebut.",
+            color = Muted,
+            fontSize = 11.sp
+        )
+    }
+}
+
+@Composable
+private fun MonitorMetric(
+    title: String,
+    value: String,
+    detail: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = SurfaceDark
+        ),
+        border = BorderStroke(1.dp, Color(0xFF263449))
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(15.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                icon,
+                contentDescription = null,
+                tint = Cyan,
+                modifier = Modifier.size(28.dp)
+            )
+            Spacer(Modifier.width(14.dp))
+            Column {
+                Text(
+                    title,
+                    color = Muted,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    value,
+                    color = Color.White,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    detail,
+                    color = Muted,
+                    fontSize = 11.sp
+                )
+            }
         }
     }
 }
