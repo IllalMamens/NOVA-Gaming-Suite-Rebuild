@@ -148,10 +148,11 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun NovaApp() {
     var selected by remember { mutableIntStateOf(0) }
-    val tabs = listOf("Home", "Games", "Monitor", "Tools")
+    val tabs = listOf("Home", "Games", "Profiles", "Monitor", "Tools")
     val icons = listOf(
         Icons.Default.Home,
         Icons.Default.SportsEsports,
+        Icons.Default.Bolt,
         Icons.Default.MonitorHeart,
         Icons.Default.Tune
     )
@@ -181,12 +182,119 @@ private fun NovaApp() {
         when (selected) {
             0 -> Dashboard(Modifier.padding(padding))
             1 -> GameSpace(Modifier.padding(padding))
+            2 -> GamingProfiles(Modifier.padding(padding))
             else -> PlaceholderPage(tabs[selected], Modifier.padding(padding))
         }
     }
 }
 
 
+
+
+@Composable
+private fun GamingProfiles(modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val prefs = remember {
+        context.getSharedPreferences("nova_game_preferences", Context.MODE_PRIVATE)
+    }
+
+    var activeProfile by remember {
+        mutableStateOf(prefs.getString("active_profile", "BALANCED") ?: "BALANCED")
+    }
+
+    val profileInfo = listOf(
+        Triple("ECO", "Hemat daya", "Cocok untuk penggunaan ringan dan sesi bermain santai."),
+        Triple("BALANCED", "Seimbang", "Pilihan harian untuk menyeimbangkan performa dan konsumsi daya."),
+        Triple("PERFORMANCE", "Prioritas performa", "Rekomendasi untuk sesi gaming yang membutuhkan respons lebih tinggi.")
+    )
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(18.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Text(
+            text = "GAMING PROFILES",
+            color = Color.White,
+            fontSize = 22.sp,
+            fontWeight = FontWeight.Bold
+        )
+
+        Text(
+            text = "Pilih karakter penggunaan perangkat saat bermain.",
+            color = Color.LightGray,
+            fontSize = 13.sp
+        )
+
+        profileInfo.forEach { (profile, subtitle, description) ->
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (activeProfile == profile)
+                        Color(0xFF183044) else Color(0xFF111B2B)
+                ),
+                border = BorderStroke(
+                    1.dp,
+                    if (activeProfile == profile) Color(0xFF36D6E7)
+                    else Color(0xFF263449)
+                )
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = profile,
+                        color = Color.White,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = subtitle,
+                        color = Color(0xFF36D6E7),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = description,
+                        color = Color.LightGray,
+                        fontSize = 13.sp
+                    )
+
+                    if (activeProfile == profile) {
+                        Text(
+                            text = "✓ PROFILE ACTIVE",
+                            color = Color(0xFF65E6A5),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    } else {
+                        OutlinedButton(
+                            onClick = {
+                                activeProfile = profile
+                                prefs.edit()
+                                    .putString("active_profile", profile)
+                                    .apply()
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("ACTIVATE PROFILE")
+                        }
+                    }
+                }
+            }
+        }
+
+        Text(
+            text = "Catatan: profil ini menyimpan pilihan dan rekomendasi penggunaan. Profil belum mengubah frekuensi CPU/GPU atau melewati batas thermal Android.",
+            color = Color.Gray,
+            fontSize = 11.sp
+        )
+    }
+}
 
 @Composable
 private fun GameSpace(modifier: Modifier = Modifier) {
