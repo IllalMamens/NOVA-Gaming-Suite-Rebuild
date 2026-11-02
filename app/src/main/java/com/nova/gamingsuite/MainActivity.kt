@@ -1,6 +1,10 @@
 package com.nova.gamingsuite
 
 import android.app.ActivityManager
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.drawable.Drawable
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -10,12 +14,16 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -24,12 +32,47 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.style.TextOverflow
 
 private val Background = Color(0xFF080B14)
 private val SurfaceDark = Color(0xFF111827)
 private val Cyan = Color(0xFF36E6F2)
 private val Purple = Color(0xFF9B72FF)
 private val Muted = Color(0xFF8995A9)
+
+
+private data class InstalledApp(
+    val name: String,
+    val packageName: String,
+    val icon: Bitmap
+)
+
+private fun drawableToBitmap(drawable: Drawable): Bitmap {
+    val width = drawable.intrinsicWidth.coerceAtLeast(1).coerceAtMost(192)
+    val height = drawable.intrinsicHeight.coerceAtLeast(1).coerceAtMost(192)
+    val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bitmap)
+    drawable.setBounds(0, 0, width, height)
+    drawable.draw(canvas)
+    return bitmap
+}
+
+private fun scanLaunchableApps(context: Context): List<InstalledApp> {
+    val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+    val results = context.packageManager.queryIntentActivities(intent, 0)
+
+    return results.mapNotNull { info ->
+        try {
+            InstalledApp(
+                name = info.loadLabel(context.packageManager).toString(),
+                packageName = info.activityInfo.packageName,
+                icon = drawableToBitmap(info.loadIcon(context.packageManager))
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }.distinctBy { it.packageName }.sortedBy { it.name.lowercase() }
+}
 
 private data class DeviceInfo(
     val manufacturer: String,
@@ -137,6 +180,181 @@ private fun NovaApp() {
         when (selected) {
             0 -> Dashboard(Modifier.padding(padding))
             else -> PlaceholderPage(tabs[selected], Modifier.padding(padding))
+        }
+    }
+}
+
+
+@Composable
+private fun GameSpace(modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    var apps by remember { mutableStateOf(emptyList<InstalledApp>()) }
+    var search by remember { mutableStateOf("") }
+    var loading by remember { mutableStateOf(true) }
+    var scanError by remember { mutableStateOf<String?>(null) }
+
+    fun refreshApps() {
+        loading = true
+        scanError = null
+        try {
+            apps = scanLaunchableApps(context)
+        } catch (e: Exception) {
+            scanError = e.message ?: "Tidak dapat memindai aplikasi."
+        }
+        loading = false
+    }
+
+    LaunchedEffect(Unit) {
+        refreshApps()
+    }
+
+    val filtered = apps.filter {
+        it.name.contains(search, ignoreCase = true) ||
+            it.packageName.contains(search, ignoreCase = true)
+    }
+
+    LazyColumn(
+        modifier = modifier.fillMaxSize(),
+        contentPadding = PaddingValues(20.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item {
+            Text(
+                "N O V A",
+                color = Cyan,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 4.sp
+            )
+            Text(
+                "GAME SPACE",
+                color = Color.White,
+                fontSize = 26.sp,
+                fontWeight = FontWeight.ExtraBold
+            )
+            Text(
+                "YOUR INSTALLED APPS & GAMES",
+                color = Muted,
+                fontSize = 10.sp,
+                letterSpacing = 1.5.sp
+            )
+        }
+
+        item {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("${apps.size} aplikasi terdeteksi", color = Cyan,
+                        fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    Text("Aplikasi yang memiliki ikon launcher",
+                        color = Muted, fontSize = 10.sp)
+                }
+                TextButton(onClick = { refreshApps() }) {
+                    Icon(Icons.Default.Refresh, null, tint = Cyan)
+                    Text("Scan", color = Cyan)
+                }
+            }
+        }
+
+        item {
+            OutlinedTextField(
+                value = search,
+                onValueChange = { search = it },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("Cari aplikasi atau game") },
+                leadingIcon = { Icon(Icons.Default.Search, null) },
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = Color.White,
+                    unfocusedTextColor = Color.White,
+                    focusedBorderColor = Cyan,
+                    unfocusedBorderColor = Muted,
+                    focusedLabelColor = Cyan,
+                    unfocusedLabelColor = Muted,
+                    cursorColor = Cyan
+                )
+            )
+        }
+
+        if (loading) {
+            item {
+                Text("Memindai aplikasi...", color = Muted)
+            }
+        }
+
+        if (scanError != null) {
+            item {
+                Text("Scan gagal: $scanError", color = Color(0xFFFF7777))
+            }
+        }
+
+        if (!loading && filtered.isEmpty()) {
+            item {
+                Text(
+                    if (apps.isEmpty()) "Tidak ada aplikasi launcher ditemukan."
+                    else "Aplikasi tidak ditemukan.",
+                    color = Muted
+                )
+            }
+        }
+
+        items(filtered.size) { index ->
+            val app = filtered[index]
+            Surface(
+                color = SurfaceDark,
+                shape = RoundedCornerShape(16.dp),
+                border = BorderStroke(1.dp, Color(0xFF202C3E)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Image(
+                        bitmap = app.icon.asImageBitmap(),
+                        contentDescription = app.name,
+                        modifier = Modifier.size(46.dp),
+                        contentScale = ContentScale.Fit
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            app.name,
+                            color = Color.White,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            app.packageName,
+                            color = Muted,
+                            fontSize = 9.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    FilledTonalButton(
+                        onClick = {
+                            val launchIntent =
+                                context.packageManager.getLaunchIntentForPackage(app.packageName)
+                            if (launchIntent != null) {
+                                context.startActivity(launchIntent)
+                            }
+                        },
+                        colors = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = Color(0xFF19313C),
+                            contentColor = Cyan
+                        ),
+                        contentPadding = PaddingValues(horizontal = 12.dp)
+                    ) {
+                        Text("OPEN", fontSize = 10.sp)
+                    }
+                }
+            }
         }
     }
 }
