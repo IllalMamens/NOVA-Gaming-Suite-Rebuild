@@ -179,6 +179,7 @@ private fun NovaApp() {
     ) { padding ->
         when (selected) {
             0 -> Dashboard(Modifier.padding(padding))
+            1 -> GameSpace(Modifier.padding(padding))
             else -> PlaceholderPage(tabs[selected], Modifier.padding(padding))
         }
     }
