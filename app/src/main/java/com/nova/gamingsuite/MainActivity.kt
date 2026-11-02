@@ -1,6 +1,11 @@
 package com.nova.gamingsuite
 
 import android.app.ActivityManager
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -8,13 +13,19 @@ import android.graphics.drawable.Drawable
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.ServiceInfo
 import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.IBinder
+import android.os.Looper
 import java.io.File
 import kotlinx.coroutines.delay
 import androidx.activity.ComponentActivity
+import android.Manifest
+import android.content.pm.PackageManager
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -705,17 +716,156 @@ private fun saveMonitorHistory(context: Context, samples: List<MonitorSample>) {
         .edit().putString("samples", content).apply()
 }
 
+
+private const val MONITOR_CHANNEL = "nova_monitor_channel"
+private const val MONITOR_NOTIFICATION_ID = 5101
+private const val ACTION_STOP_MONITOR = "com.nova.gamingsuite.STOP_MONITOR"
+
+class NovaMonitorService : Service() {
+    private val handler = Handler(Looper.getMainLooper())
+
+    private val sampler = object : Runnable {
+        override fun run() {
+            val manager = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            val memory = ActivityManager.MemoryInfo()
+            manager.getMemoryInfo(memory)
+
+            val batteryIntent = registerReceiver(
+                null,
+                IntentFilter(Intent.ACTION_BATTERY_CHANGED)
+            )
+            val rawTemp = batteryIntent?.getIntExtra(
+                BatteryManager.EXTRA_TEMPERATURE, -1
+            ) ?: -1
+
+            val sample = MonitorSample(
+                time = System.currentTimeMillis(),
+                ramMb = (memory.availMem / (1024L * 1024L)).toInt(),
+                batteryTemp = if (rawTemp >= 0) rawTemp / 10f else -1f
+            )
+
+            val history = loadMonitorHistory(this@NovaMonitorService).toMutableList()
+            history.add(sample)
+            saveMonitorHistory(this@NovaMonitorService, history)
+
+            handler.postDelayed(this, 5000)
+        }
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        createNotificationChannel()
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_STOP_MONITOR) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        val notification = buildMonitorNotification()
+
+        try {
+            if (Build.VERSION.SDK_INT >= 34) {
+                startForeground(
+                    MONITOR_NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                )
+            } else {
+                startForeground(MONITOR_NOTIFICATION_ID, notification)
+            }
+        } catch (_: Exception) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        getSharedPreferences("nova_monitor_history", Context.MODE_PRIVATE)
+            .edit().putBoolean("service_running", true).apply()
+
+        handler.removeCallbacks(sampler)
+        handler.post(sampler)
+
+        return START_NOT_STICKY
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= 26) {
+            val channel = NotificationChannel(
+                MONITOR_CHANNEL,
+                "NOVA Gaming Monitor",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Shows when NOVA device monitoring is active"
+                setShowBadge(false)
+            }
+
+            getSystemService(NotificationManager::class.java)
+                .createNotificationChannel(channel)
+        }
+    }
+
+    private fun buildMonitorNotification(): Notification {
+        val stopIntent = Intent(this, NovaMonitorService::class.java).apply {
+            action = ACTION_STOP_MONITOR
+        }
+
+        val stopPendingIntent = PendingIntent.getService(
+            this,
+            5102,
+            stopIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val builder = if (Build.VERSION.SDK_INT >= 26) {
+            Notification.Builder(this, MONITOR_CHANNEL)
+        } else {
+            @Suppress("DEPRECATION")
+            Notification.Builder(this)
+        }
+
+        return builder
+            .setSmallIcon(android.R.drawable.ic_menu_info_details)
+            .setContentTitle("NOVA Gaming Monitor")
+            .setContentText("Monitoring RAM and battery temperature every 5 seconds")
+            .setOngoing(true)
+            .addAction(
+                android.R.drawable.ic_media_pause,
+                "STOP",
+                stopPendingIntent
+            )
+            .build()
+    }
+
+    override fun onDestroy() {
+        handler.removeCallbacks(sampler)
+        getSharedPreferences("nova_monitor_history", Context.MODE_PRIVATE)
+            .edit().putBoolean("service_running", false).apply()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        super.onDestroy()
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+}
+
+
 @Composable
 private fun GamingMonitor(modifier: Modifier = Modifier) {
     val context = LocalContext.current
     var device by remember { mutableStateOf(readDeviceInfo(context)) }
     var cpuFrequency by remember { mutableStateOf(readCpuFrequency()) }
-    var isMonitoring by remember { mutableStateOf(false) }
 
     val history = remember {
         mutableStateListOf<MonitorSample>().apply {
             addAll(loadMonitorHistory(context))
         }
+    }
+
+    var serviceRunning by remember {
+        mutableStateOf(
+            context.getSharedPreferences("nova_monitor_history", Context.MODE_PRIVATE)
+                .getBoolean("service_running", false)
+        )
     }
 
     val exportLauncher = rememberLauncherForActivityResult(
@@ -740,26 +890,21 @@ private fun GamingMonitor(modifier: Modifier = Modifier) {
         }
     }
 
-    LaunchedEffect(isMonitoring) {
-        while (isMonitoring) {
+    LaunchedEffect(Unit) {
+        while (true) {
             device = readDeviceInfo(context)
             cpuFrequency = readCpuFrequency()
+            serviceRunning = context.getSharedPreferences(
+                "nova_monitor_history", Context.MODE_PRIVATE
+            ).getBoolean("service_running", false)
 
-            val ram = device.availableRam.substringBefore(" ")
-                .toIntOrNull() ?: -1
-            val temp = device.batteryTemp.substringBefore(" ")
-                .toFloatOrNull() ?: -1f
-
-            if (ram >= 0) {
-                history.add(MonitorSample(System.currentTimeMillis(), ram, temp))
-                while (history.size > 300) history.removeAt(0)
-                saveMonitorHistory(context, history)
-            }
+            val latest = loadMonitorHistory(context)
+            history.clear()
+            history.addAll(latest)
             delay(5000)
         }
     }
 
-    val latestRam = history.lastOrNull()?.ramMb ?: 0
     val maxRam = (history.maxOfOrNull { it.ramMb } ?: 1).coerceAtLeast(1)
 
     Column(
@@ -781,7 +926,7 @@ private fun GamingMonitor(modifier: Modifier = Modifier) {
                     fontSize = 21.sp,
                     fontWeight = FontWeight.Bold
                 )
-                Text("Monitoring History • 5-second interval", color = Muted, fontSize = 11.sp)
+                Text("Background monitoring • 5-second interval", color = Muted, fontSize = 11.sp)
             }
             IconButton(onClick = {
                 device = readDeviceInfo(context)
@@ -804,11 +949,6 @@ private fun GamingMonitor(modifier: Modifier = Modifier) {
             "CPU FREQUENCY", cpuFrequency,
             "CPU ABI: ${device.cpu}", Icons.Default.Speed
         )
-        MonitorMetric(
-            "DEVICE", "${device.manufacturer} ${device.model}",
-            "Android ${device.android} • SDK ${device.sdk}",
-            Icons.Default.PhoneAndroid
-        )
 
         Card(
             colors = CardDefaults.cardColors(containerColor = SurfaceDark),
@@ -818,23 +958,66 @@ private fun GamingMonitor(modifier: Modifier = Modifier) {
                 Modifier.fillMaxWidth().padding(15.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Text("MONITORING SESSION", color = Cyan, fontWeight = FontWeight.Bold)
+                Text("BACKGROUND SERVICE", color = Cyan, fontWeight = FontWeight.Bold)
                 Text(
-                    if (isMonitoring) "● RECORDING" else "○ STOPPED",
-                    color = if (isMonitoring) Color(0xFF65E6A5) else Muted
+                    if (serviceRunning) "● MONITORING ACTIVE"
+                    else "○ MONITORING STOPPED",
+                    color = if (serviceRunning) Color(0xFF65E6A5) else Muted
                 )
+
                 Button(
-                    onClick = { isMonitoring = !isMonitoring },
+                    onClick = {
+                        if (!serviceRunning) {
+                            if (Build.VERSION.SDK_INT >= 33 &&
+                                context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                                != PackageManager.PERMISSION_GRANTED
+                            ) {
+                                (context as? ComponentActivity)?.requestPermissions(
+                                    arrayOf(Manifest.permission.POST_NOTIFICATIONS), 5103
+                                )
+                                android.widget.Toast.makeText(
+                                    context,
+                                    "Izinkan notifikasi, lalu tekan START lagi.",
+                                    android.widget.Toast.LENGTH_LONG
+                                ).show()
+                            } else {
+                                try {
+                                    val intent = Intent(context, NovaMonitorService::class.java)
+                                    if (Build.VERSION.SDK_INT >= 26) {
+                                        context.startForegroundService(intent)
+                                    } else {
+                                        context.startService(intent)
+                                    }
+                                    serviceRunning = true
+                                } catch (e: Exception) {
+                                    android.widget.Toast.makeText(
+                                        context, "Service gagal dimulai: ${e.message}",
+                                        android.widget.Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                            }
+                        } else {
+                            context.stopService(
+                                Intent(context, NovaMonitorService::class.java)
+                            )
+                            serviceRunning = false
+                        }
+                    },
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Icon(
-                        if (isMonitoring) Icons.Default.Stop else Icons.Default.PlayArrow,
+                        if (serviceRunning) Icons.Default.Stop else Icons.Default.PlayArrow,
                         contentDescription = null
                     )
                     Spacer(Modifier.width(8.dp))
-                    Text(if (isMonitoring) "STOP MONITORING" else "START MONITORING")
+                    Text(if (serviceRunning) "STOP MONITORING" else "START BACKGROUND MONITOR")
                 }
-                Text("${history.size} samples saved (maximum 300)", color = Muted, fontSize = 11.sp)
+
+                Text(
+                    "Service memakai notifikasi permanen. Android tetap dapat menghentikannya karena pembatasan sistem atau baterai.",
+                    color = Muted,
+                    fontSize = 11.sp
+                )
             }
         }
 
@@ -847,12 +1030,8 @@ private fun GamingMonitor(modifier: Modifier = Modifier) {
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Text("RAM HISTORY", color = Cyan, fontWeight = FontWeight.Bold)
-                Text(
-                    if (history.isEmpty()) "Start monitoring to collect data"
-                    else "Latest available RAM: ${latestRam} MB",
-                    color = Color.White,
-                    fontSize = 12.sp
-                )
+                Text("${history.size} samples saved", color = Muted, fontSize = 11.sp)
+
                 Row(
                     modifier = Modifier.fillMaxWidth().height(100.dp),
                     horizontalArrangement = Arrangement.spacedBy(3.dp),
@@ -867,7 +1046,6 @@ private fun GamingMonitor(modifier: Modifier = Modifier) {
                         )
                     }
                 }
-                Text("Each bar represents one sample • up to 40 latest samples", color = Muted, fontSize = 10.sp)
             }
         }
 
@@ -882,14 +1060,14 @@ private fun GamingMonitor(modifier: Modifier = Modifier) {
                 Text("BATTERY TEMPERATURE HISTORY", color = Cyan, fontWeight = FontWeight.Bold)
                 history.takeLast(8).reversed().forEach { sample ->
                     Text(
-                        "${sample.time}  •  ${if (sample.batteryTemp >= 0) "${sample.batteryTemp} °C" else "N/A"}",
+                        "${sample.time} • ${
+                            if (sample.batteryTemp >= 0) "${sample.batteryTemp} °C" else "N/A"
+                        }",
                         color = Muted,
                         fontSize = 11.sp
                     )
                 }
-                if (history.isEmpty()) {
-                    Text("No samples yet", color = Muted, fontSize = 12.sp)
-                }
+                if (history.isEmpty()) Text("No samples yet", color = Muted)
             }
         }
 
@@ -905,7 +1083,10 @@ private fun GamingMonitor(modifier: Modifier = Modifier) {
 
         OutlinedButton(
             onClick = {
-                isMonitoring = false
+                if (serviceRunning) {
+                    context.stopService(Intent(context, NovaMonitorService::class.java))
+                    serviceRunning = false
+                }
                 history.clear()
                 saveMonitorHistory(context, history)
             },
@@ -916,12 +1097,6 @@ private fun GamingMonitor(modifier: Modifier = Modifier) {
             Spacer(Modifier.width(8.dp))
             Text("CLEAR HISTORY")
         }
-
-        Text(
-            "Monitoring hanya berjalan selama sesi aktif di layar ini. Data disimpan lokal. Suhu yang tidak tersedia dicatat sebagai -1.",
-            color = Muted,
-            fontSize = 11.sp
-        )
     }
 }
 
