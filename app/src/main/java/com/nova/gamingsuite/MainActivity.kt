@@ -25,7 +25,6 @@ import java.io.File
 import kotlinx.coroutines.delay
 import androidx.activity.ComponentActivity
 import android.Manifest
-import android.content.pm.PackageManager
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
