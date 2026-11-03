@@ -207,7 +207,7 @@ private fun NovaApp() {
             2 -> GamingProfiles(Modifier.padding(padding))
             3 -> GamingMonitor(Modifier.padding(padding))
             4 -> GameHistoryPage(Modifier.padding(padding))
-            else -> PlaceholderPage(tabs[selected], Modifier.padding(padding))
+            else -> SidebarControlPage(Modifier.padding(padding))
         }
     }
 }
@@ -1492,4 +1492,206 @@ private fun PlaceholderPage(title: String, modifier: Modifier = Modifier) {
                 color = Muted, fontSize = 12.sp)
         }
     }
+}
+
+
+@Composable
+private fun SidebarControlPage(modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    var overlayAllowed by remember {
+        mutableStateOf(android.provider.Settings.canDrawOverlays(context))
+    }
+
+    Column(
+        modifier = modifier.fillMaxSize().padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Text("NOVA SIDEBAR", color = Color.White,
+            fontSize = 23.sp, fontWeight = FontWeight.Bold)
+        Text("PHASE 1.7A • OVERLAY SERVICE",
+            color = Cyan, fontSize = 11.sp)
+
+        Card(colors = CardDefaults.cardColors(containerColor = SurfaceDark)) {
+            Column(Modifier.fillMaxWidth().padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    if (overlayAllowed) "OVERLAY PERMISSION ACTIVE"
+                    else "OVERLAY PERMISSION REQUIRED",
+                    color = if (overlayAllowed) Color(0xFF65E6A5)
+                    else Color(0xFFFFB86B),
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    "Izin ini diperlukan agar handle NOVA dapat tampil di atas game.",
+                    color = Muted, fontSize = 12.sp
+                )
+                Button(
+                    onClick = {
+                        if (!android.provider.Settings.canDrawOverlays(context)) {
+                            context.startActivity(
+                                Intent(
+                                    android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                    Uri.parse("package:${context.packageName}")
+                                )
+                            )
+                        }
+                        overlayAllowed =
+                            android.provider.Settings.canDrawOverlays(context)
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("GRANT OVERLAY PERMISSION")
+                }
+            }
+        }
+
+        Button(
+            onClick = {
+                overlayAllowed = android.provider.Settings.canDrawOverlays(context)
+                if (overlayAllowed) {
+                    try {
+                        context.startService(
+                            Intent(context, NovaSidebarService::class.java)
+                        )
+                        android.widget.Toast.makeText(
+                            context, "NOVA Sidebar started",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                    } catch (e: Exception) {
+                        android.widget.Toast.makeText(
+                            context, "Gagal: ${e.message}",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                    }
+                } else {
+                    android.widget.Toast.makeText(
+                        context, "Aktifkan izin overlay terlebih dahulu",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("START SIDEBAR")
+        }
+
+        OutlinedButton(
+            onClick = {
+                context.stopService(Intent(context, NovaSidebarService::class.java))
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("STOP SIDEBAR")
+        }
+
+        Text(
+            "Phase 1.7A hanya menguji overlay handle dan panel dasar. Fitur dual panel akan ditambahkan pada tahap berikutnya.",
+            color = Muted, fontSize = 11.sp
+        )
+    }
+}
+
+class NovaSidebarService : Service() {
+    private var windowManager: android.view.WindowManager? = null
+    private var handle: android.widget.TextView? = null
+    private var panel: android.widget.TextView? = null
+
+    private fun dp(value: Int): Int =
+        (value * resources.displayMetrics.density).toInt()
+
+    override fun onCreate() {
+        super.onCreate()
+        if (!android.provider.Settings.canDrawOverlays(this)) {
+            stopSelf()
+            return
+        }
+
+        windowManager = getSystemService(WINDOW_SERVICE)
+            as android.view.WindowManager
+
+        val handleView = android.widget.TextView(this).apply {
+            text = "N"
+            textSize = 19f
+            setTextColor(android.graphics.Color.WHITE)
+            gravity = android.view.Gravity.CENTER
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(android.graphics.Color.rgb(18, 49, 60))
+                cornerRadius = dp(16).toFloat()
+                setStroke(dp(1), android.graphics.Color.rgb(54, 230, 242))
+            }
+        }
+
+        val panelView = android.widget.TextView(this).apply {
+            text = "N O V A\n\nSIDEBAR ACTIVE\n\nPhase 1.7A\n\nTap to close"
+            textSize = 14f
+            setTextColor(android.graphics.Color.WHITE)
+            gravity = android.view.Gravity.CENTER
+            setPadding(dp(16), dp(16), dp(16), dp(16))
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(android.graphics.Color.rgb(13, 22, 38))
+                cornerRadius = dp(18).toFloat()
+                setStroke(dp(1), android.graphics.Color.rgb(54, 230, 242))
+            }
+            visibility = android.view.View.GONE
+            setOnClickListener {
+                visibility = android.view.View.GONE
+            }
+        }
+
+        val overlayType = android.view.WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        val flags = android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            android.view.WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+
+        val panelParams = android.view.WindowManager.LayoutParams(
+            dp(180), dp(210), overlayType, flags,
+            android.graphics.PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = android.view.Gravity.RIGHT or android.view.Gravity.CENTER_VERTICAL
+            x = dp(54)
+        }
+
+        val handleParams = android.view.WindowManager.LayoutParams(
+            dp(48), dp(104), overlayType, flags,
+            android.graphics.PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = android.view.Gravity.RIGHT or android.view.Gravity.CENTER_VERTICAL
+            x = dp(3)
+        }
+
+        try {
+            windowManager?.addView(panelView, panelParams)
+            windowManager?.addView(handleView, handleParams)
+        } catch (_: Exception) {
+            stopSelf()
+            return
+        }
+
+        handleView.setOnClickListener {
+            panelView.visibility =
+                if (panelView.visibility == android.view.View.VISIBLE)
+                    android.view.View.GONE
+                else android.view.View.VISIBLE
+        }
+
+        handle = handleView
+        panel = panelView
+    }
+
+    override fun onDestroy() {
+        try {
+            handle?.let { windowManager?.removeView(it) }
+            panel?.let { windowManager?.removeView(it) }
+        } catch (_: Exception) {
+        }
+        handle = null
+        panel = null
+        windowManager = null
+        super.onDestroy()
+    }
+
+    override fun onStartCommand(
+        intent: Intent?, flags: Int, startId: Int
+    ): Int = START_NOT_STICKY
+
+    override fun onBind(intent: Intent?): IBinder? = null
 }
