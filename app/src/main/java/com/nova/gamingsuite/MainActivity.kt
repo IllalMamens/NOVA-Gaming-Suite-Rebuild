@@ -168,7 +168,12 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun NovaApp() {
-    var selected by remember { mutableIntStateOf(0) }
+    var selected by remember {
+        mutableIntStateOf(
+            (LocalContext.current as? android.app.Activity)
+                ?.intent?.getIntExtra("nova_tab", 0)?.coerceIn(0, 5) ?: 0
+        )
+    }
     val tabs = listOf("Home", "Games", "Profiles", "Monitor", "History", "Tools")
     val icons = listOf(
         Icons.Default.Home,
@@ -207,7 +212,7 @@ private fun NovaApp() {
             2 -> GamingProfiles(Modifier.padding(padding))
             3 -> GamingMonitor(Modifier.padding(padding))
             4 -> GameHistoryPage(Modifier.padding(padding))
-            else -> PlaceholderPage(tabs[selected], Modifier.padding(padding))
+            else -> ToolsPage(Modifier.padding(padding))
         }
     }
 }
