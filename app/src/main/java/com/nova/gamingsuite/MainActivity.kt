@@ -1,6 +1,11 @@
 package com.nova.gamingsuite
 
 import android.app.ActivityManager
+import android.app.AppOpsManager
+import android.app.usage.UsageEvents
+import android.app.usage.UsageStatsManager
+import android.provider.Settings
+import android.os.Process
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -164,12 +169,13 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun NovaApp() {
     var selected by remember { mutableIntStateOf(0) }
-    val tabs = listOf("Home", "Games", "Profiles", "Monitor", "Tools")
+    val tabs = listOf("Home", "Games", "Profiles", "Monitor", "History", "Tools")
     val icons = listOf(
         Icons.Default.Home,
         Icons.Default.SportsEsports,
         Icons.Default.Bolt,
         Icons.Default.MonitorHeart,
+        Icons.Default.History,
         Icons.Default.Tune
     )
 
@@ -200,6 +206,7 @@ private fun NovaApp() {
             1 -> GameSpace(Modifier.padding(padding))
             2 -> GamingProfiles(Modifier.padding(padding))
             3 -> GamingMonitor(Modifier.padding(padding))
+            4 -> GameHistoryPage(Modifier.padding(padding))
             else -> PlaceholderPage(tabs[selected], Modifier.padding(padding))
         }
     }
@@ -716,6 +723,152 @@ private fun saveMonitorHistory(context: Context, samples: List<MonitorSample>) {
 }
 
 
+
+private data class GameSession(
+    val packageName: String,
+    val startTime: Long,
+    val endTime: Long
+)
+
+private const val GAME_HISTORY_PREFS = "nova_game_history"
+private const val GAME_HISTORY_KEY = "sessions"
+private const val GAME_TRACKER_CURSOR = "tracker_cursor"
+private const val GAME_ACTIVE_PACKAGE = "active_package"
+private const val GAME_ACTIVE_START = "active_start"
+
+private fun loadGameSessions(context: Context): List<GameSession> {
+    val raw = context.getSharedPreferences(
+        GAME_HISTORY_PREFS, Context.MODE_PRIVATE
+    ).getString(GAME_HISTORY_KEY, "") ?: ""
+
+    return raw.lines().mapNotNull { line ->
+        val v = line.split(",")
+        if (v.size != 3) return@mapNotNull null
+        val start = v[1].toLongOrNull() ?: return@mapNotNull null
+        val end = v[2].toLongOrNull() ?: return@mapNotNull null
+        if (end <= start) return@mapNotNull null
+        GameSession(v[0], start, end)
+    }.takeLast(500)
+}
+
+private fun saveGameSessions(context: Context, sessions: List<GameSession>) {
+    val raw = sessions.takeLast(500).joinToString("\n") {
+        "${it.packageName},${it.startTime},${it.endTime}"
+    }
+    context.getSharedPreferences(GAME_HISTORY_PREFS, Context.MODE_PRIVATE)
+        .edit().putString(GAME_HISTORY_KEY, raw).apply()
+}
+
+private fun hasUsageAccess(context: Context): Boolean {
+    val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
+    return try {
+        appOps.checkOpNoThrow(
+            AppOpsManager.OPSTR_GET_USAGE_STATS,
+            Process.myUid(),
+            context.packageName
+        ) == AppOpsManager.MODE_ALLOWED
+    } catch (_: Exception) {
+        false
+    }
+}
+
+private fun closeActiveGameSession(context: Context, end: Long) {
+    val prefs = context.getSharedPreferences(
+        GAME_HISTORY_PREFS, Context.MODE_PRIVATE
+    )
+    val pkg = prefs.getString(GAME_ACTIVE_PACKAGE, null)
+    val start = prefs.getLong(GAME_ACTIVE_START, 0L)
+
+    if (pkg != null && start > 0L && end > start) {
+        val sessions = loadGameSessions(context).toMutableList()
+        sessions.add(GameSession(pkg, start, end))
+        saveGameSessions(context, sessions)
+    }
+
+    prefs.edit()
+        .remove(GAME_ACTIVE_PACKAGE)
+        .remove(GAME_ACTIVE_START)
+        .apply()
+}
+
+private fun updateGameTracking(context: Context) {
+    if (!hasUsageAccess(context)) return
+
+    val historyPrefs = context.getSharedPreferences(
+        GAME_HISTORY_PREFS, Context.MODE_PRIVATE
+    )
+    val now = System.currentTimeMillis()
+    var cursor = historyPrefs.getLong(GAME_TRACKER_CURSOR, 0L)
+
+    if (cursor <= 0L) {
+        cursor = now - 15000L
+        historyPrefs.edit().putLong(GAME_TRACKER_CURSOR, cursor).apply()
+    }
+
+    val favorites = context.getSharedPreferences(
+        "nova_game_preferences", Context.MODE_PRIVATE
+    ).getStringSet("favorites", emptySet())?.toSet() ?: emptySet()
+
+    if (favorites.isEmpty()) {
+        closeActiveGameSession(context, now)
+        historyPrefs.edit().putLong(GAME_TRACKER_CURSOR, now).apply()
+        return
+    }
+
+    val manager = context.getSystemService(Context.USAGE_STATS_SERVICE)
+        as UsageStatsManager
+    val events = manager.queryEvents(cursor, now)
+    val event = UsageEvents.Event()
+    var newest = cursor
+
+    while (events.hasNextEvent()) {
+        events.getNextEvent(event)
+        if (event.timeStamp > newest) newest = event.timeStamp
+
+        val pkg = event.packageName ?: continue
+        val resumed = if (Build.VERSION.SDK_INT >= 29) {
+            event.eventType == UsageEvents.Event.ACTIVITY_RESUMED
+        } else {
+            event.eventType == UsageEvents.Event.MOVE_TO_FOREGROUND
+        }
+        val paused = if (Build.VERSION.SDK_INT >= 29) {
+            event.eventType == UsageEvents.Event.ACTIVITY_PAUSED ||
+                event.eventType == UsageEvents.Event.ACTIVITY_STOPPED
+        } else {
+            event.eventType == UsageEvents.Event.MOVE_TO_BACKGROUND
+        }
+
+        val active = historyPrefs.getString(GAME_ACTIVE_PACKAGE, null)
+
+        if (resumed) {
+            if (active != null && active != pkg) {
+                closeActiveGameSession(context, event.timeStamp)
+            }
+            if (pkg in favorites &&
+                historyPrefs.getString(GAME_ACTIVE_PACKAGE, null) == null
+            ) {
+                historyPrefs.edit()
+                    .putString(GAME_ACTIVE_PACKAGE, pkg)
+                    .putLong(GAME_ACTIVE_START, event.timeStamp)
+                    .apply()
+            }
+        } else if (paused && active == pkg) {
+            closeActiveGameSession(context, event.timeStamp)
+        }
+    }
+
+    historyPrefs.edit().putLong(
+        GAME_TRACKER_CURSOR, maxOf(newest, now)
+    ).apply()
+}
+
+private fun formatGameDuration(ms: Long): String {
+    val total = (ms.coerceAtLeast(0L) / 1000L)
+    val hours = total / 3600
+    val minutes = (total % 3600) / 60
+    return if (hours > 0) "${hours}j ${minutes}m" else "${minutes}m"
+}
+
 private const val MONITOR_CHANNEL = "nova_monitor_channel"
 private const val MONITOR_NOTIFICATION_ID = 5101
 private const val ACTION_STOP_MONITOR = "com.nova.gamingsuite.STOP_MONITOR"
@@ -746,6 +899,7 @@ class NovaMonitorService : Service() {
             val history = loadMonitorHistory(this@NovaMonitorService).toMutableList()
             history.add(sample)
             saveMonitorHistory(this@NovaMonitorService, history)
+            updateGameTracking(this@NovaMonitorService)
 
             handler.postDelayed(this, 5000)
         }
@@ -838,6 +992,7 @@ class NovaMonitorService : Service() {
 
     override fun onDestroy() {
         handler.removeCallbacks(sampler)
+        closeActiveGameSession(this, System.currentTimeMillis())
         getSharedPreferences("nova_monitor_history", Context.MODE_PRIVATE)
             .edit().putBoolean("service_running", false).apply()
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -1095,6 +1250,133 @@ private fun GamingMonitor(modifier: Modifier = Modifier) {
             Icon(Icons.Default.Delete, contentDescription = null)
             Spacer(Modifier.width(8.dp))
             Text("CLEAR HISTORY")
+        }
+    }
+}
+
+
+@Composable
+private fun GameHistoryPage(modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    var sessions by remember { mutableStateOf(loadGameSessions(context)) }
+    var access by remember { mutableStateOf(hasUsageAccess(context)) }
+
+    fun refresh() {
+        sessions = loadGameSessions(context)
+        access = hasUsageAccess(context)
+    }
+
+    val grouped = sessions.groupBy { it.packageName }
+    val totalMs = sessions.sumOf { it.endTime - it.startTime }
+
+    LazyColumn(
+        modifier = modifier.fillMaxSize(),
+        contentPadding = PaddingValues(20.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item {
+            Text("N O V A", color = Cyan, fontSize = 13.sp,
+                fontWeight = FontWeight.Bold, letterSpacing = 4.sp)
+            Text("GAME HISTORY", color = Color.White,
+                fontSize = 25.sp, fontWeight = FontWeight.ExtraBold)
+            Text("AUTOMATIC PLAYTIME TRACKER", color = Muted,
+                fontSize = 10.sp, letterSpacing = 1.2.sp)
+        }
+
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = SurfaceDark)) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("TOTAL PLAYTIME", color = Muted, fontSize = 11.sp)
+                    Text(formatGameDuration(totalMs), color = Cyan,
+                        fontSize = 27.sp, fontWeight = FontWeight.Bold)
+                    Text("${sessions.size} sesi tercatat",
+                        color = Muted, fontSize = 12.sp)
+                }
+            }
+        }
+
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = SurfaceDark)) {
+                Column(Modifier.padding(14.dp)) {
+                    Text("USAGE ACCESS", color = Color.White,
+                        fontWeight = FontWeight.Bold)
+                    Text(
+                        if (access) "Aktif — pelacakan tersedia saat Monitor berjalan"
+                        else "Belum aktif — izinkan akses penggunaan aplikasi",
+                        color = if (access) Cyan else Color(0xFFFFB86B),
+                        fontSize = 12.sp
+                    )
+                    Button(
+                        onClick = {
+                            context.startActivity(
+                                Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("BUKA PENGATURAN")
+                    }
+                }
+            }
+        }
+
+        item {
+            Text("PLAYTIME PER GAME", color = Cyan,
+                fontWeight = FontWeight.Bold)
+        }
+
+        if (grouped.isEmpty()) {
+            item {
+                Text("Belum ada sesi. Aktifkan Usage Access, favoritkan game, lalu jalankan Monitor.",
+                    color = Muted, fontSize = 12.sp)
+            }
+        } else {
+            items(grouped.size) { index ->
+                val entry = grouped.entries.sortedByDescending { e ->
+                    e.value.sumOf { it.endTime - it.startTime }
+                }[index]
+                val duration = entry.value.sumOf { it.endTime - it.startTime }
+                Card(colors = CardDefaults.cardColors(containerColor = SurfaceDark)) {
+                    Column(Modifier.padding(14.dp)) {
+                        Text(entry.key, color = Color.White,
+                            fontWeight = FontWeight.Bold)
+                        Text("${formatGameDuration(duration)} • ${entry.value.size} sesi",
+                            color = Cyan, fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+
+        item {
+            Text("RECENT SESSIONS", color = Cyan,
+                fontWeight = FontWeight.Bold)
+        }
+
+        items(sessions.sortedByDescending { it.endTime }.take(30).size) { index ->
+            val recent = sessions.sortedByDescending { it.endTime }.take(30)[index]
+            Card(colors = CardDefaults.cardColors(containerColor = SurfaceDark)) {
+                Column(Modifier.padding(12.dp)) {
+                    Text(recent.packageName, color = Color.White, fontSize = 12.sp)
+                    Text(
+                        "${java.text.DateFormat.getDateTimeInstance().format(java.util.Date(recent.startTime))} • ${formatGameDuration(recent.endTime - recent.startTime)}",
+                        color = Muted, fontSize = 11.sp
+                    )
+                }
+            }
+        }
+
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { refresh() }) {
+                    Text("REFRESH")
+                }
+                OutlinedButton(onClick = {
+                    saveGameSessions(context, emptyList())
+                    refresh()
+                }) {
+                    Text("CLEAR HISTORY")
+                }
+            }
         }
     }
 }
