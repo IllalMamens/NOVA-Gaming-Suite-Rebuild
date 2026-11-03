@@ -168,9 +168,10 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun NovaApp() {
+    val activityContext = LocalContext.current
     var selected by remember {
         mutableIntStateOf(
-            (LocalContext.current as? android.app.Activity)
+            (activityContext as? android.app.Activity)
                 ?.intent?.getIntExtra("nova_tab", 0)?.coerceIn(0, 5) ?: 0
         )
     }
