@@ -1269,6 +1269,37 @@ private fun GameHistoryPage(modifier: Modifier = Modifier) {
     val grouped = sessions.groupBy { it.packageName }
     val totalMs = sessions.sumOf { it.endTime - it.startTime }
 
+    val csvLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/csv")
+    ) { uri ->
+        if (uri != null) {
+            try {
+                val activePrefs = context.getSharedPreferences(
+                    GAME_HISTORY_PREFS, Context.MODE_PRIVATE
+                )
+                val activePackage = activePrefs.getString(GAME_ACTIVE_PACKAGE, null)
+                val activeStart = activePrefs.getLong(GAME_ACTIVE_START, 0L)
+                val exportRows = sessions.toMutableList()
+                if (activePackage != null && activeStart > 0L) {
+                    exportRows.add(
+                        GameSession(activePackage, activeStart, System.currentTimeMillis())
+                    )
+                }
+
+                context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { out ->
+                    out.appendLine("package_name,start_time,end_time,duration_minutes")
+                    exportRows.forEach { session ->
+                        val duration = (session.endTime - session.startTime).coerceAtLeast(0L)
+                        out.appendLine(
+                            "${session.packageName},${session.startTime},${session.endTime},${duration / 60000L}"
+                        )
+                    }
+                }
+            } catch (_: Exception) {
+            }
+        }
+    }
+
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(20.dp),
@@ -1366,15 +1397,31 @@ private fun GameHistoryPage(modifier: Modifier = Modifier) {
         }
 
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { refresh() }) {
-                    Text("REFRESH")
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = { csvLauncher.launch("nova_game_history.csv") },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.FileDownload, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("EXPORT CSV")
                 }
-                OutlinedButton(onClick = {
-                    saveGameSessions(context, emptyList())
-                    refresh()
-                }) {
-                    Text("CLEAR HISTORY")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = { refresh() },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("REFRESH")
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            saveGameSessions(context, emptyList())
+                            refresh()
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("CLEAR HISTORY")
+                    }
                 }
             }
         }
