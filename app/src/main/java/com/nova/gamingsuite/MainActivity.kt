@@ -1591,16 +1591,142 @@ private fun SidebarControlPage(modifier: Modifier = Modifier) {
     }
 }
 
+
 class NovaSidebarService : Service() {
     private var windowManager: android.view.WindowManager? = null
     private var handle: android.widget.TextView? = null
-    private var panel: android.widget.TextView? = null
+    private var panel: android.view.View? = null
+    private var content: android.widget.TextView? = null
+    private var panelParams: android.view.WindowManager.LayoutParams? = null
+    private var handleParams: android.view.WindowManager.LayoutParams? = null
+
+    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var currentPage = "HOME"
 
     private fun dp(value: Int): Int =
         (value * resources.displayMetrics.density).toInt()
 
+    private fun makeBackground(
+        color: Int,
+        stroke: Int = android.graphics.Color.rgb(54, 230, 242)
+    ): android.graphics.drawable.GradientDrawable =
+        android.graphics.drawable.GradientDrawable().apply {
+            setColor(color)
+            cornerRadius = dp(14).toFloat()
+            setStroke(dp(1), stroke)
+        }
+
+    private fun label(
+        value: String,
+        size: Float,
+        color: Int = android.graphics.Color.WHITE
+    ) = android.widget.TextView(this).apply {
+        text = value
+        textSize = size
+        setTextColor(color)
+        gravity = android.view.Gravity.CENTER_VERTICAL
+    }
+
+    private fun tab(
+        name: String,
+        page: String,
+        parent: android.widget.LinearLayout
+    ) {
+        val button = label(name, 10f, android.graphics.Color.WHITE).apply {
+            gravity = android.view.Gravity.CENTER
+            setPadding(dp(5), dp(10), dp(5), dp(10))
+            background = makeBackground(
+                android.graphics.Color.rgb(23, 43, 62),
+                android.graphics.Color.rgb(54, 230, 242)
+            )
+            isClickable = true
+            setOnClickListener { showPage(page) }
+        }
+        parent.addView(
+            button,
+            android.widget.LinearLayout.LayoutParams(0, dp(38), 1f).apply {
+                setMargins(dp(2), 0, dp(2), 0)
+            }
+        )
+    }
+
+    private fun showPage(page: String) {
+        currentPage = page
+        refreshContent()
+    }
+
+    private fun refreshContent() {
+        val output = when (currentPage) {
+            "RAM" -> {
+                val manager = getSystemService(ACTIVITY_SERVICE)
+                    as android.app.ActivityManager
+                val info = android.app.ActivityManager.MemoryInfo()
+                manager.getMemoryInfo(info)
+                val total = info.totalMem / (1024 * 1024)
+                val available = info.availMem / (1024 * 1024)
+                val used = total - available
+                val percent = if (total > 0) used * 100 / total else 0
+
+                "RAM MONITOR\n\n" +
+                    "Total RAM : ${total} MB\n" +
+                    "Used RAM  : ${used} MB\n" +
+                    "Available : ${available} MB\n" +
+                    "Usage     : $percent%\n\n" +
+                    "Data dibaca langsung dari Android."
+            }
+            "THERMAL" -> {
+                val battery = registerReceiver(
+                    null,
+                    android.content.IntentFilter(
+                        android.content.Intent.ACTION_BATTERY_CHANGED
+                    )
+                )
+                val temperature = battery?.getIntExtra(
+                    android.os.BatteryManager.EXTRA_TEMPERATURE, -1
+                ) ?: -1
+
+                val tempText = if (temperature >= 0)
+                    "${temperature / 10.0} °C"
+                else "Tidak tersedia"
+
+                "THERMAL MONITOR\n\n" +
+                    "Battery temperature:\n$tempText\n\n" +
+                    "Catatan: ini suhu baterai, bukan suhu CPU/GPU."
+            }
+            "SESSION" -> {
+                "GAME SESSION\n\n" +
+                    "NOVA Monitor Service menyediakan pemantauan sesi.\n\n" +
+                    "Pastikan Usage Access aktif, game sudah masuk Favorites, " +
+                    "dan Monitor NOVA sedang berjalan.\n\n" +
+                    "Deteksi otomatis langsung dari sidebar belum diaktifkan."
+            }
+            else -> {
+                "N O V A  GAMING\n\n" +
+                    "INTERACTIVE SIDEBAR\n\n" +
+                    "Pilih tool di atas untuk melihat informasi perangkat.\n\n" +
+                    "Overlay berjalan terpisah dari halaman utama NOVA."
+            }
+        }
+
+        content?.text = output
+    }
+
+    private val updater = object : Runnable {
+        override fun run() {
+            if (panel?.visibility == android.view.View.VISIBLE) {
+                try {
+                    refreshContent()
+                } catch (_: Exception) {
+                    content?.text = "Data perangkat sementara tidak tersedia."
+                }
+            }
+            handler.postDelayed(this, 2000)
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
+
         if (!android.provider.Settings.canDrawOverlays(this)) {
             stopSelf()
             return
@@ -1609,82 +1735,188 @@ class NovaSidebarService : Service() {
         windowManager = getSystemService(WINDOW_SERVICE)
             as android.view.WindowManager
 
+        val root = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            background = makeBackground(android.graphics.Color.rgb(13, 22, 38))
+        }
+
+        val header = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+        }
+
+        val title = label("NOVA CONTROL", 15f).apply {
+            setTypeface(null, android.graphics.Typeface.BOLD)
+        }
+
+        val close = label("✕", 18f).apply {
+            gravity = android.view.Gravity.CENTER
+            isClickable = true
+            setOnClickListener {
+                root.visibility = android.view.View.GONE
+            }
+        }
+
+        header.addView(
+            title,
+            android.widget.LinearLayout.LayoutParams(0, dp(36), 1f)
+        )
+        header.addView(close, android.widget.LinearLayout.LayoutParams(dp(34), dp(36)))
+        root.addView(header)
+
+        val tabs = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+            setPadding(0, dp(8), 0, dp(8))
+        }
+
+        tab("HOME", "HOME", tabs)
+        tab("RAM", "RAM", tabs)
+        tab("THERMAL", "THERMAL", tabs)
+        tab("SESSION", "SESSION", tabs)
+        root.addView(tabs)
+
+        val separator = android.view.View(this).apply {
+            setBackgroundColor(android.graphics.Color.rgb(54, 230, 242))
+        }
+        root.addView(
+            separator,
+            android.widget.LinearLayout.LayoutParams(-1, dp(1))
+        )
+
+        content = label("", 12f).apply {
+            gravity = android.view.Gravity.TOP
+            setPadding(dp(5), dp(14), dp(5), dp(8))
+        }
+
+        val scroll = android.widget.ScrollView(this).apply {
+            addView(
+                content,
+                android.widget.ScrollView.LayoutParams(-1, -2)
+            )
+        }
+
+        root.addView(
+            scroll,
+            android.widget.LinearLayout.LayoutParams(-1, 0, 1f)
+        )
+
+        val footer = label("NOVA • PHASE 1.7B", 9f,
+            android.graphics.Color.rgb(54, 230, 242)).apply {
+            gravity = android.view.Gravity.CENTER
+            setPadding(0, dp(8), 0, 0)
+        }
+        root.addView(footer)
+
         val handleView = android.widget.TextView(this).apply {
             text = "N"
             textSize = 19f
             setTextColor(android.graphics.Color.WHITE)
             gravity = android.view.Gravity.CENTER
-            background = android.graphics.drawable.GradientDrawable().apply {
-                setColor(android.graphics.Color.rgb(18, 49, 60))
-                cornerRadius = dp(16).toFloat()
-                setStroke(dp(1), android.graphics.Color.rgb(54, 230, 242))
-            }
+            background = makeBackground(android.graphics.Color.rgb(18, 49, 60))
         }
 
-        val panelView = android.widget.TextView(this).apply {
-            text = "N O V A\n\nSIDEBAR ACTIVE\n\nPhase 1.7A\n\nTap to close"
-            textSize = 14f
-            setTextColor(android.graphics.Color.WHITE)
-            gravity = android.view.Gravity.CENTER
-            setPadding(dp(16), dp(16), dp(16), dp(16))
-            background = android.graphics.drawable.GradientDrawable().apply {
-                setColor(android.graphics.Color.rgb(13, 22, 38))
-                cornerRadius = dp(18).toFloat()
-                setStroke(dp(1), android.graphics.Color.rgb(54, 230, 242))
-            }
-            visibility = android.view.View.GONE
-            setOnClickListener {
-                visibility = android.view.View.GONE
-            }
-        }
-
-        val overlayType = android.view.WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-        val flags = android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+        val overlayType =
+            android.view.WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        val flags =
+            android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
             android.view.WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
 
-        val panelParams = android.view.WindowManager.LayoutParams(
-            dp(180), dp(210), overlayType, flags,
+        val pParams = android.view.WindowManager.LayoutParams(
+            dp(250), dp(340), overlayType, flags,
             android.graphics.PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = android.view.Gravity.RIGHT or android.view.Gravity.CENTER_VERTICAL
+            gravity = android.view.Gravity.RIGHT or
+                android.view.Gravity.CENTER_VERTICAL
             x = dp(54)
         }
 
-        val handleParams = android.view.WindowManager.LayoutParams(
+        val hParams = android.view.WindowManager.LayoutParams(
             dp(48), dp(104), overlayType, flags,
             android.graphics.PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = android.view.Gravity.RIGHT or android.view.Gravity.CENTER_VERTICAL
+            gravity = android.view.Gravity.RIGHT or
+                android.view.Gravity.CENTER_VERTICAL
             x = dp(3)
         }
 
         try {
-            windowManager?.addView(panelView, panelParams)
-            windowManager?.addView(handleView, handleParams)
-        } catch (_: Exception) {
+            windowManager?.addView(root, pParams)
+            windowManager?.addView(handleView, hParams)
+        } catch (e: Exception) {
+            try {
+                windowManager?.removeView(root)
+            } catch (_: Exception) {}
             stopSelf()
             return
         }
 
-        handleView.setOnClickListener {
-            panelView.visibility =
-                if (panelView.visibility == android.view.View.VISIBLE)
-                    android.view.View.GONE
-                else android.view.View.VISIBLE
-        }
-
+        panel = root
         handle = handleView
-        panel = panelView
+        panelParams = pParams
+        handleParams = hParams
+
+        showPage("HOME")
+        handler.post(updater)
+
+        var downX = 0f
+        var downY = 0f
+        var initialX = 0
+        var initialY = 0
+        var moved = false
+
+        handleView.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    downX = event.rawX
+                    downY = event.rawY
+                    initialX = hParams.x
+                    initialY = hParams.y
+                    moved = false
+                    true
+                }
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    val dx = event.rawX - downX
+                    val dy = event.rawY - downY
+                    if (kotlin.math.abs(dx) > dp(5) ||
+                        kotlin.math.abs(dy) > dp(5)) {
+                        moved = true
+                    }
+                    if (moved) {
+                        hParams.x = (initialX - dx.toInt()).coerceAtLeast(0)
+                        hParams.y = initialY + dy.toInt()
+                        try {
+                            windowManager?.updateViewLayout(handleView, hParams)
+                        } catch (_: Exception) {}
+                    }
+                    true
+                }
+                android.view.MotionEvent.ACTION_UP -> {
+                    if (!moved) {
+                        root.visibility =
+                            if (root.visibility == android.view.View.VISIBLE)
+                                android.view.View.GONE
+                            else android.view.View.VISIBLE
+                    }
+                    true
+                }
+                else -> true
+            }
+        }
     }
 
     override fun onDestroy() {
+        handler.removeCallbacks(updater)
         try {
             handle?.let { windowManager?.removeView(it) }
             panel?.let { windowManager?.removeView(it) }
-        } catch (_: Exception) {
-        }
+        } catch (_: Exception) {}
+
         handle = null
         panel = null
+        content = null
+        panelParams = null
+        handleParams = null
         windowManager = null
         super.onDestroy()
     }

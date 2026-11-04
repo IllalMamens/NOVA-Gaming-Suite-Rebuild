@@ -2,7 +2,9 @@ name: NOVA Android Build
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
+      - phase-1.7-rebuild
   workflow_dispatch:
 
 jobs:
