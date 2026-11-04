@@ -1792,7 +1792,7 @@ class NovaSidebarService : Service() {
         val scroll = android.widget.ScrollView(this).apply {
             addView(
                 content,
-                android.widget.ScrollView.LayoutParams(-1, -2)
+                android.widget.LinearLayout.LayoutParams(-1, -2)
             )
         }
 
